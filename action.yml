@@ -1,0 +1,45 @@
+name: Aedis DAST baseline
+description: >-
+  Varredura dinâmica (OWASP ZAP baseline) contra a URL alvo, sumário JSON (aedis.platform/dast-summary/v1) e falha
+  quando há alertas no risco configurado que não estejam aceitos, com validade, em dast-accept.yaml.
+inputs:
+  target-url:
+    description: "URL da superfície exposta (ex.: http://localhost:8080/)"
+    required: true
+  accept-file:
+    description: "Arquivo de aceites de risco (lista de pluginId, until, reason)"
+    default: dast-accept.yaml
+  fail-on:
+    description: Risco mínimo que reprova (High ou Medium)
+    default: High
+  summary-name:
+    description: Nome do artefato com o relatório e o sumário
+    default: dast-summary
+runs:
+  using: composite
+  steps:
+    - name: ZAP baseline
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target-url }}
+      run: |
+        set -euo pipefail
+        mkdir -p dast && chmod 777 dast
+        # -I: avisos não mudam o código de saída; quem decide reprovar é o sumário, respeitando os aceites.
+        docker run --rm --network host -v "$PWD/dast:/zap/wrk:rw" \
+          ghcr.io/zaproxy/zaproxy@sha256:5ccfff9a411743ab2615136a2edd7416bec9ce41572fa94e935df38c14adb2b6 \
+          zap-baseline.py -t "$TARGET" -J report.json -I -m 2 || true
+        test -f dast/report.json || { echo "::error::ZAP não produziu dast/report.json"; exit 1; }
+    - name: Sumário e gate
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target-url }}
+        ACCEPT: ${{ inputs.accept-file }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: python3 "$ACTION_PATH/dast-summary.py" --report dast/report.json --accept "$ACCEPT" --fail-on "$FAIL_ON" --target "$TARGET" --out dast/dast-summary.json
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      if: always()
+      with:
+        name: ${{ inputs.summary-name }}
+        path: dast/
