@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Converte o relatório JSON do ZAP baseline no sumário aedis.platform/dast-summary/v1 e aplica o gate: qualquer
-alerta com risco >= --fail-on não aceito falha. Aceites (dast-accept.yaml) têm pluginId, until (AAAA-MM-DD) e reason.
+alerta com risco >= --fail-on não aceito falha. Aceites (dast-accept.yaml) têm pluginId, until (AAAA-MM-DD) e reason,
+e opcionalmente paths: a lista de caminhos (exatos) a que o aceite se limita. Com paths, o alerta só é aceito se toda
+ocorrência dele estiver num desses caminhos; uma ocorrência em outro caminho continua bloqueando.
 
 Uso: dast-summary.py --report report.json [--accept dast-accept.yaml] [--fail-on High|Medium] [--out dast-summary.json] [--self-test]
 """
 import argparse, json, os, sys
+from urllib.parse import urlparse
 from datetime import date, datetime, timezone
 
 RISKS = {"0": "Informational", "1": "Low", "2": "Medium", "3": "High"}
@@ -19,12 +22,27 @@ def load_accepts(path):
     return [a for a in data.get("accept", []) if date.fromisoformat(str(a["until"])) >= date.today()]
 
 
+def covering(accepts, pid, alert):
+    """O aceite que cobre todas as ocorrências do alerta, ou None. Sem paths, o aceite vale para o plugin inteiro."""
+    mine = [x for x in accepts if str(x["pluginId"]) == pid]
+    whole = next((x for x in mine if not x.get("paths")), None)
+    if whole:
+        return whole
+    uris = [i.get("uri", "") for i in alert.get("instances", [])]
+    if not uris:
+        return None
+    for x in mine:
+        if all(urlparse(u).path in x["paths"] for u in uris):
+            return x
+    return None
+
+
 def summarize(report, accepts, fail_on, target=""):
     alerts = []
     for site in report.get("site", []):
         for a in site.get("alerts", []):
             pid = str(a.get("pluginid"))
-            accepted = next((x for x in accepts if str(x["pluginId"]) == pid), None)
+            accepted = covering(accepts, pid, a)
             alerts.append({"pluginId": pid, "name": a.get("alert", ""), "risk": RISKS.get(str(a.get("riskcode")), "Informational"),
                            "count": int(a.get("count", len(a.get("instances", [])))),
                            "accepted": accepted["reason"] if accepted else None})
@@ -43,6 +61,12 @@ def self_test():
     assert summarize(rep, [{"pluginId": 40012, "reason": "x", "until": "2999-01-01"}], "High")["result"] == "pass"
     assert summarize(rep, [{"pluginId": 40012, "reason": "x", "until": "2999-01-01"}], "Medium")["blocking"] == 1
     assert summarize({}, [], "Medium")["result"] == "pass"
+    sri = {"site": [{"alerts": [{"pluginid": 90003, "alert": "SRI", "riskcode": "2", "instances": [{"uri": "http://h:8080/llms-full.txt"}]}]}]}
+    scoped = [{"pluginId": 90003, "reason": "texto puro", "until": "2999-01-01", "paths": ["/llms-full.txt"]}]
+    assert summarize(sri, scoped, "Medium")["result"] == "pass"
+    sri["site"][0]["alerts"][0]["instances"].append({"uri": "http://h:8080/index.html"})
+    assert summarize(sri, scoped, "Medium")["result"] == "fail"
+    assert summarize({"site": [{"alerts": [{"pluginid": 90003, "alert": "SRI", "riskcode": "2", "count": "1"}]}]}, scoped, "Medium")["result"] == "fail"
     print("self-test ok")
 
 

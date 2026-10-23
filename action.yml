@@ -7,7 +7,7 @@ inputs:
     description: "URL da superfície exposta (ex.: http://localhost:8080/)"
     required: true
   accept-file:
-    description: "Arquivo de aceites de risco (lista de pluginId, until, reason)"
+    description: "Arquivo de aceites de risco (lista de pluginId, until, reason e, opcional, paths)"
     default: dast-accept.yaml
   fail-on:
     description: Risco mínimo que reprova (High ou Medium)
