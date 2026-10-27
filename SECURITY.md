@@ -16,9 +16,9 @@ Use **Report a vulnerability** in this repository's Security tab (GitHub Private
 
 ## Scope
 
-`action.yml` and `dast-summary.py`: what runs in the caller's job, the ZAP image it pins by digest and the gate it applies. OWASP ZAP itself is covered by [zaproxy/zaproxy](https://github.com/zaproxy/zaproxy/security/policy); the Aedis Platform reusable workflows this repository calls by [aedis-build/aedis-platform](https://github.com/aedis-build/aedis-platform/security/policy).
+`action.yml`, `dast-summary.py` and `scripts/`: what runs in the caller's job, the ZAP and Nuclei images it pins by digest, how it handles the credentials it is given and the gate it applies. OWASP ZAP itself is covered by [zaproxy/zaproxy](https://github.com/zaproxy/zaproxy/security/policy) and Nuclei by [projectdiscovery/nuclei](https://github.com/projectdiscovery/nuclei/security/policy); the Aedis Platform reusable workflows this repository calls by [aedis-build/aedis-platform](https://github.com/aedis-build/aedis-platform/security/policy).
 
 ## Practices of this repository
 
-- Every action pinned by commit SHA and the ZAP image by digest; `permissions: {}` by default; no credentials at all (the scan needs none).
+- Every action pinned by commit SHA and the scanner images by digest; `permissions: {}` by default; the only credentials are the ones the caller passes for an authenticated scan, masked and kept out of the artifact.
 - Dependencies updated by Dependabot; OpenSSF Scorecard published; releases immutable and attested by GitHub.
