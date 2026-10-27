@@ -1,0 +1,2 @@
+{"template-id":"http-missing-security-headers","info":{"name":"HTTP Missing Security Headers","severity":"medium","tags":["misconfig","headers"]},"type":"http","host":"http://localhost:8080","matched-at":"http://localhost:8080/llms-full.txt","matcher-name":"content-security-policy","timestamp":"2026-10-27T12:00:00Z"}
+{"template-id":"tech-detect","info":{"name":"Wappalyzer Technology Detection","severity":"info","tags":["tech"]},"type":"http","host":"http://localhost:8080","matched-at":"http://localhost:8080/","matcher-name":"python","timestamp":"2026-10-27T12:00:01Z"}
