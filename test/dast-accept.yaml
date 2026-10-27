@@ -1,0 +1,9 @@
+# Fixture for test/run.sh: an expired acceptance blocks again, a path-scoped one covers only its paths.
+accept:
+  - pluginId: 10038
+    until: 2020-01-01            # expired on purpose: the alert must block again
+    reason: CSP applied at the edge (WAF); evidence in ticket SEC-123
+  - pluginId: 90003
+    until: 2999-12-31
+    reason: plain-text file, nothing to pin with SRI
+    paths: [/llms-full.txt]

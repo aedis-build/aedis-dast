@@ -1,0 +1,31 @@
+{
+  "@version": "2.16.0",
+  "site": [
+    {
+      "@name": "http://localhost:8080",
+      "alerts": [
+        {
+          "pluginid": "10038",
+          "alert": "Content Security Policy (CSP) Header Not Set",
+          "riskcode": "2",
+          "count": "1",
+          "instances": [{"uri": "http://localhost:8080/index.html", "method": "GET"}]
+        },
+        {
+          "pluginid": "90003",
+          "alert": "Sub Resource Integrity Attribute Missing",
+          "riskcode": "2",
+          "count": "1",
+          "instances": [{"uri": "http://localhost:8080/llms-full.txt", "method": "GET"}]
+        },
+        {
+          "pluginid": "10036",
+          "alert": "Server Leaks Version Information via \"Server\" HTTP Response Header Field",
+          "riskcode": "1",
+          "count": "2",
+          "instances": [{"uri": "http://localhost:8080/", "method": "GET"}, {"uri": "http://localhost:8080/index.html", "method": "GET"}]
+        }
+      ]
+    }
+  ]
+}

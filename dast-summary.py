@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Converte o relatório JSON do ZAP baseline no sumário aedis.platform/dast-summary/v1 e aplica o gate: qualquer
-alerta com risco >= --fail-on não aceito falha. Aceites (dast-accept.yaml) têm pluginId, until (AAAA-MM-DD) e reason,
-e opcionalmente paths: a lista de caminhos (exatos) a que o aceite se limita. Com paths, o alerta só é aceito se toda
-ocorrência dele estiver num desses caminhos; uma ocorrência em outro caminho continua bloqueando.
+"""Turns the ZAP baseline JSON report into the aedis.platform/dast-summary/v1 summary and applies the gate: any alert
+with risk >= --fail-on that is not accepted fails. Acceptances (dast-accept.yaml) have pluginId, until (YYYY-MM-DD)
+and reason, and optionally paths: the list of (exact) paths the acceptance is limited to. With paths, the alert is
+accepted only when every occurrence of it is on one of those paths; an occurrence elsewhere still blocks.
 
-Uso: dast-summary.py --report report.json [--accept dast-accept.yaml] [--fail-on High|Medium] [--out dast-summary.json] [--self-test]
+Usage: dast-summary.py --report report.json [--accept dast-accept.yaml] [--fail-on High|Medium] [--out dast-summary.json] [--self-test]
 """
 import argparse, json, os, sys
 from urllib.parse import urlparse
@@ -17,13 +17,13 @@ RANK = {"Informational": 0, "Low": 1, "Medium": 2, "High": 3}
 def load_accepts(path):
     if not path or not os.path.exists(path):
         return []
-    import yaml  # PyYAML vem com o runner
+    import yaml  # PyYAML ships with the runner
     data = yaml.safe_load(open(path, encoding="utf-8")) or {}
     return [a for a in data.get("accept", []) if date.fromisoformat(str(a["until"])) >= date.today()]
 
 
 def covering(accepts, pid, alert):
-    """O aceite que cobre todas as ocorrências do alerta, ou None. Sem paths, o aceite vale para o plugin inteiro."""
+    """The acceptance that covers every occurrence of the alert, or None. Without paths, it covers the whole plugin."""
     mine = [x for x in accepts if str(x["pluginId"]) == pid]
     whole = next((x for x in mine if not x.get("paths")), None)
     if whole:
@@ -62,7 +62,7 @@ def self_test():
     assert summarize(rep, [{"pluginId": 40012, "reason": "x", "until": "2999-01-01"}], "Medium")["blocking"] == 1
     assert summarize({}, [], "Medium")["result"] == "pass"
     sri = {"site": [{"alerts": [{"pluginid": 90003, "alert": "SRI", "riskcode": "2", "instances": [{"uri": "http://h:8080/llms-full.txt"}]}]}]}
-    scoped = [{"pluginId": 90003, "reason": "texto puro", "until": "2999-01-01", "paths": ["/llms-full.txt"]}]
+    scoped = [{"pluginId": 90003, "reason": "plain text", "until": "2999-01-01", "paths": ["/llms-full.txt"]}]
     assert summarize(sri, scoped, "Medium")["result"] == "pass"
     sri["site"][0]["alerts"][0]["instances"].append({"uri": "http://h:8080/index.html"})
     assert summarize(sri, scoped, "Medium")["result"] == "fail"
@@ -85,7 +85,7 @@ def main():
     json.dump(summary, open(args.out, "w", encoding="utf-8"), indent=2)
     c = summary["counts"]
     print(f"DAST {args.target}: {c['High']} high, {c['Medium']} medium, {c['Low']} low, {c['Informational']} info; "
-          f"{summary['accepted']} aceitos; {summary['blocking']} bloqueantes (>= {args.fail_on})")
+          f"{summary['accepted']} accepted; {summary['blocking']} blocking (>= {args.fail_on})")
     for x in summary["alerts"]:
         if RANK[x["risk"]] >= RANK[args.fail_on] and not x["accepted"]:
             print(f"  [{x['risk']}] {x['pluginId']} {x['name']} ({x['count']}x)")

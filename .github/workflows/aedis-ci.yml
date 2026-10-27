@@ -1,0 +1,68 @@
+# Quality pipeline of this action: Conventional Commits, SAST (Semgrep with the Aedis rules) and REUSE through the
+# Aedis Platform reusables, the tests of the summary and the gate (unit self-test and fixtures), and the action
+# itself against a static site served in the job. The gate (gate.yml) listens for the end of this workflow on pull
+# requests.
+name: aedis-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+# One run per pull request: a new push or closing the PR cancels the run in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  commits:
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    uses: aedis-build/aedis-platform/.github/workflows/conventional-commits.yml@0372306df888c2e382079df0482e2f63d5aba7db # v1.0.3
+    permissions:
+      contents: read
+
+  sast:
+    if: github.event.action != 'closed'
+    uses: aedis-build/aedis-platform/.github/workflows/sast.yml@0372306df888c2e382079df0482e2f63d5aba7db # v1.0.3
+    permissions:
+      contents: read
+      security-events: write
+
+  test:
+    if: github.event.action != 'closed'
+    name: Self-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: bash test/run.sh
+      - run: pipx run reuse==5.0.2 lint
+
+  dast:
+    if: github.event.action != 'closed'
+    name: DAST against a static site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Serve the test site
+        run: |
+          set -euo pipefail
+          (cd test/site && python3 -m http.server 8080 >/dev/null 2>&1 &)
+          curl --retry 10 --retry-connrefused --retry-delay 1 -fsS -o /dev/null http://localhost:8080/
+      # A bare http.server has no security headers: Medium findings, none High, so the default gate passes.
+      - uses: ./
+        with:
+          target-url: http://localhost:8080/
+          accept-file: test/dast-accept.yaml
+      - name: The summary says what the gate saw
+        run: python3 -c "import json; s=json.load(open('dast/dast-summary.json')); assert s['schema']=='aedis.platform/dast-summary/v1' and s['result']=='pass' and s['counts']['High']==0, s"
