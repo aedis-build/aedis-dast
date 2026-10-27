@@ -1,19 +1,27 @@
-name: Aedis DAST baseline
+# Dynamic scan (OWASP ZAP baseline) against the target URL, run in the caller's job after the application is up:
+# the ZAP report becomes the JSON summary aedis.platform/dast-summary/v1, and the job fails when an alert at or above
+# the configured risk is not accepted, with an expiry date, in dast-accept.yaml. Needs Docker on the runner
+# (ubuntu-latest has it) and the application reachable from the host network.
+name: Aedis DAST
 description: >-
-  Varredura dinâmica (OWASP ZAP baseline) contra a URL alvo, sumário JSON (aedis.platform/dast-summary/v1) e falha
-  quando há alertas no risco configurado que não estejam aceitos, com validade, em dast-accept.yaml.
+  OWASP ZAP baseline scan against a URL with a JSON summary and a gate: alerts at the configured risk fail the job
+  unless accepted, with an expiry date and optional paths, in dast-accept.yaml.
+author: Aedis
+branding:
+  icon: shield
+  color: purple
 inputs:
   target-url:
-    description: "URL da superfície exposta (ex.: http://localhost:8080/)"
+    description: "URL of the exposed surface (e.g. http://localhost:8080/)"
     required: true
   accept-file:
-    description: "Arquivo de aceites de risco (lista de pluginId, until, reason e, opcional, paths)"
+    description: Risk acceptance file (list of pluginId, until, reason and, optionally, paths)
     default: dast-accept.yaml
   fail-on:
-    description: Risco mínimo que reprova (High ou Medium)
+    description: Lowest risk that fails the job (High or Medium)
     default: High
   summary-name:
-    description: Nome do artefato com o relatório e o sumário
+    description: Name of the artifact with the report and the summary
     default: dast-summary
 runs:
   using: composite
@@ -25,12 +33,12 @@ runs:
       run: |
         set -euo pipefail
         mkdir -p dast && chmod 777 dast
-        # -I: avisos não mudam o código de saída; quem decide reprovar é o sumário, respeitando os aceites.
+        # -I: warnings do not change the exit code; the summary decides, honouring the acceptances.
         docker run --rm --network host -v "$PWD/dast:/zap/wrk:rw" \
           ghcr.io/zaproxy/zaproxy@sha256:5ccfff9a411743ab2615136a2edd7416bec9ce41572fa94e935df38c14adb2b6 \
           zap-baseline.py -t "$TARGET" -J report.json -I -m 2 || true
-        test -f dast/report.json || { echo "::error::ZAP não produziu dast/report.json"; exit 1; }
-    - name: Sumário e gate
+        test -f dast/report.json || { echo "::error::ZAP produced no dast/report.json"; exit 1; }
+    - name: Summary and gate
       shell: bash
       env:
         TARGET: ${{ inputs.target-url }}
