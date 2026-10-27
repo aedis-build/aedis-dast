@@ -139,13 +139,16 @@ runs:
             fi
             data=(-d grant_type=client_credentials -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET")
             [ -z "$SCOPE" ] || data+=(-d "scope=$SCOPE")
-            if ! session="$(curl -fsS --max-time 30 -X POST "$TOKEN_URL" "${data[@]}" | python3 -c '
-        import json, sys
-        token = json.load(sys.stdin).get("access_token")
-        if not token: raise SystemExit("no access_token in the token response")
-        print(json.dumps({"headers": {"Authorization": "Bearer " + token}}))')"; then
+            # The token response lands in a file under $RUNNER_TEMP (never piped, never in the artifact) and is deleted below.
+            if ! curl -fsS --max-time 30 -o "$dir/token.json" -X POST "$TOKEN_URL" "${data[@]}"; then
               warn "auth client-credentials: the token endpoint refused the client; scanning unauthenticated"; exit 0
-            fi ;;
+            fi
+            session="$(python3 -c '
+        import json, sys
+        token = json.load(open(sys.argv[1])).get("access_token")
+        if not token: raise SystemExit("no access_token in the token response")
+        print(json.dumps({"headers": {"Authorization": "Bearer " + token}}))' "$dir/token.json")"
+            rm -f "$dir/token.json" ;;
           session)
             [ -n "$LOGIN" ] || { warn "auth session: login-command is empty; scanning unauthenticated"; exit 0; }
             if ! session="$(bash -c "$LOGIN")"; then warn "auth session: login-command failed; scanning unauthenticated"; exit 0; fi ;;
