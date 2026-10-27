@@ -1,2 +1,8 @@
-# Every path, including this file, the workflows and the security policy, is reviewed by the maintainer.
-* @jeffersonnlucas
+# Owners by path. The action's entry point, CI, this file and the security policy require review from platform security.
+*                               @aedis-build/maintainers
+/action.yml                     @aedis-build/platform-security
+/dast-summary.py                @aedis-build/platform-security
+/test/                          @aedis-build/platform-security
+/.github/                       @aedis-build/platform-security
+/CODEOWNERS                     @aedis-build/platform-security
+/SECURITY.md                    @aedis-build/platform-security
