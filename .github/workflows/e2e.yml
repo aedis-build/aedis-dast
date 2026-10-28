@@ -1,0 +1,36 @@
+# End-to-end run of the action with everything on, by hand: the static test site served in the job, ZAP baseline per
+# path, Nuclei in two passes against localhost and the edge check. Takes a few minutes (Nuclei downloads its
+# templates); the pull request pipeline (aedis-ci) covers the same without Nuclei.
+name: e2e
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dast:
+    name: DAST with Nuclei and edge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Serve the test site
+        run: |
+          set -euo pipefail
+          (cd test/site && python3 -m http.server 8080 >/dev/null 2>&1 &)
+          curl --retry 10 --retry-all-errors --retry-delay 1 -fsS -o /dev/null http://localhost:8080/
+      - uses: ./
+        id: dast
+        with:
+          target-url: http://localhost:8080/
+          target-paths: /llms-full.txt
+          accept-file: test/dast-accept.yaml
+          nuclei: true
+          edge: true
+      - name: The summary says what the gate saw
+        run: python3 -c "import json; s=json.load(open('dast/dast-summary.json')); assert s['schema']=='aedis.platform/dast-summary/v2' and s['result']=='pass' and s['tools']['nuclei']['ran'] and s['tools']['edge']['ran'], s"

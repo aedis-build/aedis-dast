@@ -1,7 +1,7 @@
 # Quality pipeline of this action: Conventional Commits, SAST (Semgrep with the Aedis rules) and REUSE through the
-# Aedis Platform reusables, the tests of the summary and the gate (unit self-test and fixtures), and the action
-# itself against a static site served in the job. The gate (gate.yml) listens for the end of this workflow on pull
-# requests.
+# Aedis Platform reusables, the tests of the summary, the acceptances and the auth helper (unit self-tests and
+# fixtures), and the action itself (ZAP per path and the edge check) against a static site served in the job. The
+# gate (gate.yml) listens for the end of this workflow on pull requests.
 name: aedis-ci
 
 on:
@@ -59,10 +59,19 @@ jobs:
           set -euo pipefail
           (cd test/site && python3 -m http.server 8080 >/dev/null 2>&1 &)
           curl --retry 10 --retry-connrefused --retry-delay 1 -fsS -o /dev/null http://localhost:8080/
-      # A bare http.server has no security headers: Medium findings, none High, so the default gate passes.
+      # A bare http.server has no security headers: Medium findings from ZAP and the edge check, none High, so the
+      # default gate passes. Nuclei stays out of the pull request pipeline (minutes of templates); e2e.yml runs it.
       - uses: ./
+        id: dast
         with:
           target-url: http://localhost:8080/
+          target-paths: /llms-full.txt
           accept-file: test/dast-accept.yaml
+          edge: true
       - name: The summary says what the gate saw
-        run: python3 -c "import json; s=json.load(open('dast/dast-summary.json')); assert s['schema']=='aedis.platform/dast-summary/v1' and s['result']=='pass' and s['counts']['High']==0, s"
+        env:
+          RESULT: ${{ steps.dast.outputs.result }}
+        run: |
+          set -euo pipefail
+          test "$RESULT" = pass
+          python3 -c "import json; s=json.load(open('dast/dast-summary.json')); assert s['schema']=='aedis.platform/dast-summary/v2' and s['result']=='pass' and s['counts']['high']==0 and s['tools']['edge']['ran'] and len(s['targets'])==2, s"

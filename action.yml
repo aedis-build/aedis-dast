@@ -1,11 +1,14 @@
-# Dynamic scan (OWASP ZAP baseline) against the target URL, run in the caller's job after the application is up:
-# the ZAP report becomes the JSON summary aedis.platform/dast-summary/v1, and the job fails when an alert at or above
-# the configured risk is not accepted, with an expiry date, in dast-accept.yaml. Needs Docker on the runner
-# (ubuntu-latest has it) and the application reachable from the host network.
+# Dynamic scan of a URL the caller's job already serves, with a JSON summary (aedis.platform/dast-summary/v2) and a
+# gate: findings at or above the configured risk fail the job unless accepted, with an expiry date, in
+# dast-accept.yaml. With only `target-url` it is the OWASP ZAP baseline of v1; the rest is opt-in: ZAP per path or by
+# OpenAPI contract, Nuclei in two passes (templates by tag, then DAST/fuzzing), authentication (client credentials or
+# a session the caller logs in), and an edge check of the security headers, cookies, HTTP redirect and TLS. Needs
+# Docker on the runner (ubuntu-latest has it) and the application reachable from the host network.
 name: Aedis DAST
 description: >-
-  OWASP ZAP baseline scan against a URL with a JSON summary and a gate: alerts at the configured risk fail the job
-  unless accepted, with an expiry date and optional paths, in dast-accept.yaml.
+  OWASP ZAP (baseline per path or by OpenAPI contract) and Nuclei scans against a URL, authenticated or not, plus an
+  edge check of security headers and TLS, with one JSON summary and a gate: findings at the configured risk fail the
+  job unless accepted, with an expiry date and optional paths, in dast-accept.yaml.
 author: Aedis
 branding:
   icon: shield
@@ -14,40 +17,276 @@ inputs:
   target-url:
     description: "URL of the exposed surface (e.g. http://localhost:8080/)"
     required: true
+  target-paths:
+    description: Extra targets, comma- or newline-separated, as paths under target-url (/api/orders) or full URLs; the ZAP baseline runs once per target
+    default: ""
+  openapi:
+    description: OpenAPI contract (URL or file) that replaces the ZAP baseline with zap-api-scan.py against target-url
+    default: ""
+  zap-rules-file:
+    description: Optional ZAP rules file (one `<pluginId>\tIGNORE|WARN|FAIL\t(<note>)` per line) passed to the scan as -c
+    default: ""
   accept-file:
-    description: Risk acceptance file (list of pluginId, until, reason and, optionally, paths)
+    description: Risk acceptance file (list of id or pluginId, until, reason and, optionally, paths and title)
     default: dast-accept.yaml
   fail-on:
-    description: Lowest risk that fails the job (High or Medium)
+    description: Lowest risk that fails the job, over the unaccepted findings of every tool (High or Medium)
     default: High
   summary-name:
-    description: Name of the artifact with the report and the summary
+    description: Name of the artifact with dast-summary.json
     default: dast-summary
+  report-name:
+    description: Name of the artifact with the ZAP reports (HTML, JSON, MD per target), the Nuclei outputs and the edge captures
+    default: dast-report
+  nuclei:
+    description: Run Nuclei in two passes, templates by tag and DAST/fuzzing (true or false)
+    default: "false"
+  nuclei-tags:
+    description: Template tags of the first Nuclei pass
+    default: cve,misconfig,exposure,auth,jwt,ssrf,sqli,xss,rce
+  nuclei-exclude-tags:
+    description: Template tags left out of the first Nuclei pass
+    default: dos,bruteforce
+  nuclei-rate-limit:
+    description: Nuclei requests per second
+    default: "25"
+  nuclei-concurrency:
+    description: Nuclei templates run in parallel
+    default: "8"
+  sarif-upload:
+    description: Upload the Nuclei SARIF files to code scanning (categories aedis-dast/nuclei and aedis-dast/nuclei-dast); the job needs security-events write
+    default: "true"
+  auth:
+    description: "none, client-credentials (OAuth2 token from auth-token-url) or session (headers and cookies printed by login-command)"
+    default: none
+  auth-token-url:
+    description: OAuth2 token endpoint for client-credentials
+    default: ""
+  auth-client-id:
+    description: OAuth2 client id for client-credentials (pass a secret)
+    default: ""
+  auth-client-secret:
+    description: OAuth2 client secret for client-credentials (pass a secret)
+    default: ""
+  auth-scope:
+    description: Optional OAuth2 scope for client-credentials
+    default: ""
+  login-command:
+    description: 'For session: a command that logs in and prints {"headers": {...}, "cookies": {...}} as JSON on stdout'
+    default: ""
+  logout-paths:
+    description: For session, paths the ZAP spider never requests, so the session survives the scan (comma-separated)
+    default: /logout,/signout,/api/auth/signout
+  edge:
+    description: Check the edge with curl, security headers, cookies, HTTP to HTTPS redirect and legacy TLS (true or false)
+    default: "false"
+  edge-urls:
+    description: URLs the edge check requests, comma- or newline-separated; empty uses the origin of target-url
+    default: ""
+  edge-hsts-severity:
+    description: Severity of a missing Strict-Transport-Security header (medium, or high for production)
+    default: medium
+outputs:
+  result:
+    description: pass or fail of the gate
+    value: ${{ steps.summary.outputs.result }}
 runs:
   using: composite
   steps:
-    - name: ZAP baseline
+    - name: Targets
       shell: bash
       env:
         TARGET: ${{ inputs.target-url }}
+        PATHS: ${{ inputs.target-paths }}
+        EDGE_URLS: ${{ inputs.edge-urls }}
       run: |
         set -euo pipefail
-        mkdir -p dast && chmod 777 dast
-        # -I: warnings do not change the exit code; the summary decides, honouring the acceptances.
-        docker run --rm --network host -v "$PWD/dast:/zap/wrk:rw" \
-          ghcr.io/zaproxy/zaproxy@sha256:5ccfff9a411743ab2615136a2edd7416bec9ce41572fa94e935df38c14adb2b6 \
-          zap-baseline.py -t "$TARGET" -J report.json -I -m 2 || true
-        test -f dast/report.json || { echo "::error::ZAP produced no dast/report.json"; exit 1; }
-    - name: Summary and gate
+        mkdir -p dast dast/zap && chmod 777 dast dast/zap
+        : > dast/warnings.txt
+        origin="$(printf '%s' "$TARGET" | sed -E 's#^(https?://[^/]+).*$#\1#')"
+        [[ "$origin" == http://* || "$origin" == https://* ]] || { echo "::error::target-url must start with http:// or https://"; exit 1; }
+        {
+          echo "$TARGET"
+          printf '%s\n' "$PATHS" | tr ',;' '\n\n' | sed 's/^ *//; s/ *$//' | while IFS= read -r p; do
+            case "$p" in "") ;; http://*|https://*) echo "$p" ;; /*) echo "$origin$p" ;; *) echo "$origin/$p" ;; esac
+          done
+        } | awk 'NF && !seen[$0]++' > dast/targets.txt
+        printf '%s\n' "${EDGE_URLS:-$origin}" | tr ',;' '\n\n' | sed 's/^ *//; s/ *$//' | awk 'NF && !seen[$0]++' > dast/edge-urls.txt
+        echo "targets: $(tr '\n' ' ' < dast/targets.txt)"
+    # Credentials live outside the artifact ($RUNNER_TEMP) and every value is masked by scripts/auth-files.py. A
+    # failed login does not stop the scan: it runs unauthenticated and the summary says so (authenticated: false).
+    - name: Authentication
+      id: auth
+      if: inputs.auth != 'none'
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
+        AUTH: ${{ inputs.auth }}
+        TOKEN_URL: ${{ inputs.auth-token-url }}
+        CLIENT_ID: ${{ inputs.auth-client-id }}
+        CLIENT_SECRET: ${{ inputs.auth-client-secret }}
+        SCOPE: ${{ inputs.auth-scope }}
+        LOGIN: ${{ inputs.login-command }}
+        LOGOUT_PATHS: ${{ inputs.logout-paths }}
+      run: |
+        set -euo pipefail
+        dir="$RUNNER_TEMP/aedis-dast-auth"; rm -rf "$dir"; mkdir -p "$dir"
+        warn() { echo "::warning::$1"; echo "$1" >> dast/warnings.txt; echo "authenticated=false" >> "$GITHUB_OUTPUT"; }
+        case "$AUTH" in
+          client-credentials)
+            if [ -z "$TOKEN_URL" ] || [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
+              warn "auth client-credentials: auth-token-url, auth-client-id or auth-client-secret is empty; scanning unauthenticated"; exit 0
+            fi
+            data=(-d grant_type=client_credentials -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET")
+            [ -z "$SCOPE" ] || data+=(-d "scope=$SCOPE")
+            # The token response lands in a file under $RUNNER_TEMP (never piped, never in the artifact) and is deleted below.
+            if ! curl -fsS --max-time 30 -o "$dir/token.json" -X POST "$TOKEN_URL" "${data[@]}"; then
+              warn "auth client-credentials: the token endpoint refused the client; scanning unauthenticated"; exit 0
+            fi
+            session="$(python3 -c '
+        import json, sys
+        token = json.load(open(sys.argv[1])).get("access_token")
+        if not token: raise SystemExit("no access_token in the token response")
+        print(json.dumps({"headers": {"Authorization": "Bearer " + token}}))' "$dir/token.json")"
+            rm -f "$dir/token.json" ;;
+          session)
+            [ -n "$LOGIN" ] || { warn "auth session: login-command is empty; scanning unauthenticated"; exit 0; }
+            if ! session="$(bash -c "$LOGIN")"; then warn "auth session: login-command failed; scanning unauthenticated"; exit 0; fi ;;
+          *) echo "::error::auth must be none, client-credentials or session"; exit 1 ;;
+        esac
+        printf '%s' "$session" | python3 "$ACTION_PATH/scripts/auth-files.py" --out "$dir" --logout-paths "$LOGOUT_PATHS"
+        echo "authenticated=true" >> "$GITHUB_OUTPUT"
+    - name: ZAP
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target-url }}
+        OPENAPI: ${{ inputs.openapi }}
+        RULES: ${{ inputs.zap-rules-file }}
+        AUTHED: ${{ steps.auth.outputs.authenticated }}
+      run: |
+        set -euo pipefail
+        image=ghcr.io/zaproxy/zaproxy@sha256:5ccfff9a411743ab2615136a2edd7416bec9ce41572fa94e935df38c14adb2b6
+        mounts=(-v "$PWD/dast:/zap/wrk:rw")
+        args=(-I -m 2)
+        if [ -n "$RULES" ]; then cp "$RULES" dast/zap/rules.conf; args+=(-c /zap/wrk/zap/rules.conf); fi
+        # The session headers reach ZAP as a config file (-configfile), so values with spaces never go through -z.
+        if [ "$AUTHED" = true ]; then mounts+=(-v "$RUNNER_TEMP/aedis-dast-auth:/zap/auth:ro"); args+=(-z "-configfile /zap/auth/zap.conf"); fi
+        # -I: warnings do not change the exit code; the summary decides, honouring the acceptances.
+        if [ -n "$OPENAPI" ]; then
+          spec="$OPENAPI"
+          case "$OPENAPI" in http://*|https://*) ;; *) cp "$OPENAPI" "dast/zap/openapi.${OPENAPI##*.}"; spec="/zap/wrk/zap/openapi.${OPENAPI##*.}" ;; esac
+          origin="$(head -1 dast/targets.txt | sed -E 's#^(https?://[^/]+).*$#\1#')"
+          echo "ZAP API scan ($OPENAPI) -> $TARGET"
+          docker run --rm --network host "${mounts[@]}" "$image" zap-api-scan.py -t "$spec" -f openapi -O "$origin" \
+            -J zap/0.json -r zap/0.html -w zap/0.md "${args[@]}" || true
+          test -f dast/zap/0.json || { echo "::error::ZAP produced no report for the OpenAPI scan"; exit 1; }
+        else
+          i=0
+          while IFS= read -r url; do
+            echo "ZAP baseline -> $url"
+            docker run --rm --network host "${mounts[@]}" "$image" zap-baseline.py -t "$url" -J "zap/$i.json" -r "zap/$i.html" -w "zap/$i.md" "${args[@]}" || true
+            test -f "dast/zap/$i.json" || { echo "::error::ZAP produced no report for $url"; exit 1; }
+            i=$((i + 1))
+          done < dast/targets.txt
+        fi
+    # Two passes: templates by tag (CVEs, misconfigurations, exposures...) and the DAST templates (-dast), which fuzz
+    # the parameters of the targets and never run by tag. Raw requests are omitted from every output, so an
+    # Authorization header or cookie never lands in the artifact.
+    - name: Nuclei
+      if: inputs.nuclei == 'true'
+      shell: bash
+      env:
+        TAGS: ${{ inputs.nuclei-tags }}
+        ETAGS: ${{ inputs.nuclei-exclude-tags }}
+        RATE: ${{ inputs.nuclei-rate-limit }}
+        CONC: ${{ inputs.nuclei-concurrency }}
+        AUTHED: ${{ steps.auth.outputs.authenticated }}
+      run: |
+        set -euo pipefail
+        mkdir -p dast/nuclei && chmod 777 dast/nuclei
+        image=projectdiscovery/nuclei@sha256:582d5546902e67052097cb2d07296c642d50a1afc5e44623cb038845df9a32eb # v3.11.1
+        headers=()
+        if [ "$AUTHED" = true ]; then while IFS= read -r h; do headers+=(-H "$h"); done < "$RUNNER_TEMP/aedis-dast-auth/headers"; fi
+        common=(-l /w/targets.txt -severity medium,high,critical -rl "$RATE" -c "$CONC" -timeout 10 -retries 1 -mhe 30 -fr -omit-raw -nc -duc -stats)
+        echo "Nuclei by tag ($TAGS, except $ETAGS)"
+        docker run --rm --network host -v "$PWD/dast:/w" "$image" "${common[@]}" -tags "$TAGS" -etags "$ETAGS" \
+          -jsonl -o /w/nuclei/nuclei.jsonl -se /w/nuclei/nuclei.sarif -me /w/nuclei/nuclei-md "${headers[@]}" || echo "::warning::Nuclei (tags) exited with an error"
+        echo "Nuclei DAST (fuzzing)"
+        docker run --rm --network host -v "$PWD/dast:/w" "$image" "${common[@]}" -dast \
+          -jsonl -o /w/nuclei/nuclei-dast.jsonl -se /w/nuclei/nuclei-dast.sarif -me /w/nuclei/nuclei-dast-md "${headers[@]}" || echo "::warning::Nuclei (dast) exited with an error"
+        for f in nuclei.jsonl nuclei-dast.jsonl; do [ -e "dast/nuclei/$f" ] || : > "dast/nuclei/$f"; done
+    - name: Nuclei SARIF to code scanning
+      if: inputs.nuclei == 'true' && inputs.sarif-upload == 'true' && hashFiles('dast/nuclei/nuclei.sarif') != ''
+      uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+      continue-on-error: true
+      with:
+        sarif_file: dast/nuclei/nuclei.sarif
+        category: aedis-dast/nuclei
+    - name: Nuclei DAST SARIF to code scanning
+      if: inputs.nuclei == 'true' && inputs.sarif-upload == 'true' && hashFiles('dast/nuclei/nuclei-dast.sarif') != ''
+      uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+      continue-on-error: true
+      with:
+        sarif_file: dast/nuclei/nuclei-dast.sarif
+        category: aedis-dast/nuclei-dast
+    # Read-only and unauthenticated: one GET per edge URL with redirects, the plain-HTTP counterpart and a TLS 1.1
+    # handshake. The summary turns the captures into findings; an unreachable host is a warning.
+    - name: Edge
+      if: inputs.edge == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        mkdir -p dast/edge
+        i=0
+        while IFS= read -r url; do
+          code="$(curl -sS -L --max-redirs 5 --max-time 20 -o /dev/null -D "dast/edge/$i.headers" -w '%{http_code}' "$url" 2>/dev/null)" || code=000
+          http=""; tls11=skipped
+          if [[ "$url" == https://* ]]; then
+            host="${url#https://}"; host="${host%%/*}"
+            http="$(curl -sS --max-redirs 0 --max-time 20 -o /dev/null -w '%{http_code} %{redirect_url}' "http://$host/" 2>/dev/null)" || http="000 "
+            if curl -sS --max-time 20 -o /dev/null --tlsv1.0 --tls-max 1.1 "https://$host/" 2>/dev/null; then tls11=accepted; else tls11=rejected; fi
+          fi
+          printf 'url=%s\nhttps_code=%s\nhttp=%s\ntls11=%s\n' "$url" "$code" "$http" "$tls11" > "dast/edge/$i.meta"
+          echo "edge $url -> $code, HTTP ${http:-n/a}, TLS<=1.1 $tls11"
+          i=$((i + 1))
+        done < dast/edge-urls.txt
+    - name: Summary and gate
+      id: summary
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
         TARGET: ${{ inputs.target-url }}
         ACCEPT: ${{ inputs.accept-file }}
         FAIL_ON: ${{ inputs.fail-on }}
-        ACTION_PATH: ${{ github.action_path }}
-      run: python3 "$ACTION_PATH/dast-summary.py" --report dast/report.json --accept "$ACCEPT" --fail-on "$FAIL_ON" --target "$TARGET" --out dast/dast-summary.json
+        NUCLEI: ${{ inputs.nuclei }}
+        EDGE: ${{ inputs.edge }}
+        AUTH: ${{ inputs.auth }}
+        AUTHED: ${{ steps.auth.outputs.authenticated }}
+        HSTS: ${{ inputs.edge-hsts-severity }}
+      run: |
+        set -euo pipefail
+        args=(--zap dast/zap/*.json --accept "$ACCEPT" --fail-on "$FAIL_ON" --target "$TARGET" --targets "$(paste -sd, dast/targets.txt)"
+              --auth-mode "$AUTH" --edge-hsts-severity "$HSTS" --warnings-file dast/warnings.txt --out dast/dast-summary.json)
+        [ "$NUCLEI" != true ] || args+=(--nuclei dast/nuclei/nuclei.jsonl dast/nuclei/nuclei-dast.jsonl)
+        [ "$EDGE" != true ] || args+=(--edge-dir dast/edge)
+        [ "$AUTHED" != true ] || args+=(--authenticated)
+        rc=0
+        python3 "$ACTION_PATH/dast-summary.py" "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY" || rc=$?
+        echo "result=$([ $rc -eq 0 ] && echo pass || echo fail)" >> "$GITHUB_OUTPUT"
+        exit $rc
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       if: always()
       with:
         name: ${{ inputs.summary-name }}
-        path: dast/
+        path: dast/dast-summary.json
+        if-no-files-found: ignore
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      if: always()
+      with:
+        name: ${{ inputs.report-name }}
+        path: |
+          dast/targets.txt
+          dast/zap/
+          dast/nuclei/
+          dast/edge/
+        if-no-files-found: ignore
