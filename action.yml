@@ -5,10 +5,7 @@
 # a session the caller logs in), and an edge check of the security headers, cookies, HTTP redirect and TLS. Needs
 # Docker on the runner (ubuntu-latest has it) and the application reachable from the host network.
 name: Aedis DAST
-description: >-
-  OWASP ZAP (baseline per path or by OpenAPI contract) and Nuclei scans against a URL, authenticated or not, plus an
-  edge check of security headers and TLS, with one JSON summary and a gate: findings at the configured risk fail the
-  job unless accepted, with an expiry date and optional paths, in dast-accept.yaml.
+description: OWASP ZAP and Nuclei scans against a URL, authenticated or not, with an edge check, one JSON summary and a risk gate.
 author: Aedis
 branding:
   icon: shield
