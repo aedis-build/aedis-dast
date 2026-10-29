@@ -82,9 +82,10 @@ jobs:
           target-url: http://localhost:8080/
           accept-file: test/dast-accept.yaml
           summary-name: dast-summary-session
+          report-name: dast-report-session
           auth: session
           login-command: |
-            printf '%s' '{"headers": {"X-Test-Session": "abc def"}, "cookies": {"sid": "1"}}'
+            printf '%s' '{"headers": {"X-Test-Session": "test-session-header"}, "cookies": {"sid": "test-session-cookie"}}'
       - name: The session scan ran authenticated
         run: |
           set -euo pipefail
