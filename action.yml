@@ -167,7 +167,8 @@ runs:
         args=(-I -m 2)
         if [ -n "$RULES" ]; then cp "$RULES" dast/zap/rules.conf; args+=(-c /zap/wrk/zap/rules.conf); fi
         # The session headers reach ZAP as a config file (-configfile), so values with spaces never go through -z.
-        if [ "$AUTHED" = true ]; then mounts+=(-v "$RUNNER_TEMP/aedis-dast-auth:/zap/auth:ro"); args+=(-z "-configfile /zap/auth/zap.conf"); fi
+        # The container user is not the runner: it reads the auth files (0640, the runner's group) as a member of that group.
+        if [ "$AUTHED" = true ]; then mounts+=(--group-add "$(id -g)" -v "$RUNNER_TEMP/aedis-dast-auth:/zap/auth:ro"); args+=(-z "-configfile /zap/auth/zap.conf"); fi
         # -I: warnings do not change the exit code; the summary decides, honouring the acceptances.
         if [ -n "$OPENAPI" ]; then
           spec="$OPENAPI"
