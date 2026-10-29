@@ -75,3 +75,18 @@ jobs:
           set -euo pipefail
           test "$RESULT" = pass
           python3 -c "import json; s=json.load(open('dast/dast-summary.json')); assert s['schema']=='aedis.platform/dast-summary/v2' and s['result']=='pass' and s['counts']['high']==0 and s['tools']['edge']['ran'] and len(s['targets'])==2, s"
+      # Session auth: ZAP runs in its container as its own user and must read the auth files the helper wrote on the
+      # host (group-readable, through docker run --group-add). Runs after the assertions above: same dast/ directory.
+      - uses: ./
+        with:
+          target-url: http://localhost:8080/
+          accept-file: test/dast-accept.yaml
+          summary-name: dast-summary-session
+          report-name: dast-report-session
+          auth: session
+          login-command: |
+            printf '%s' '{"headers": {"X-Test-Session": "test-session-header"}, "cookies": {"sid": "test-session-cookie"}}'
+      - name: The session scan ran authenticated
+        run: |
+          set -euo pipefail
+          python3 -c "import json; s=json.load(open('dast/dast-summary.json')); assert s['authenticated'] is True and s['authMode']=='session' and s['tools']['zap']['ran'], s"
