@@ -39,13 +39,15 @@ def write(session, out, logout_paths):
         raise SystemExit("the login command printed no headers and no cookies")
     # Group-readable, never world-readable: the ZAP container runs as its own user and reads the files through the
     # runner's group (docker run --group-add); Nuclei runs on the host as the runner itself.
-    os.makedirs(out, mode=0o750, exist_ok=True)
-    os.chmod(out, 0o750)
+    # The group may only traverse the directory (no listing), and nothing reaches other users; the rule's 0o644
+    # suggestion would make the session headers world-readable.
+    os.makedirs(out, mode=0o710, exist_ok=True)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+    os.chmod(out, 0o710)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
     for name, content in (("headers", lines), ("zap.conf", zap_conf(lines, logout_paths))):
         path = os.path.join(out, name)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(content) + "\n")
-        os.chmod(path, 0o640)
+        os.chmod(path, 0o640)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
     for line in lines:
         print(f"::add-mask::{line.split(': ', 1)[1]}")
     for v in (session.get("cookies") or {}).values():
@@ -68,7 +70,7 @@ def self_test():
         assert open(os.path.join(d, "auth", "headers")).read() == "Authorization: Bearer abc def\nCookie: sid=1; csrf=x=y\n"
         assert os.path.exists(os.path.join(d, "auth", "zap.conf"))
         if os.name == "posix":
-            assert os.stat(os.path.join(d, "auth")).st_mode & 0o777 == 0o750
+            assert os.stat(os.path.join(d, "auth")).st_mode & 0o777 == 0o710
             assert all(os.stat(os.path.join(d, "auth", f)).st_mode & 0o777 == 0o640 for f in ("headers", "zap.conf"))
     print("self-test ok")
 
