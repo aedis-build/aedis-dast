@@ -215,14 +215,14 @@ runs:
         for f in nuclei.jsonl nuclei-dast.jsonl; do [ -e "dast/nuclei/$f" ] || : > "dast/nuclei/$f"; done
     - name: Nuclei SARIF to code scanning
       if: inputs.nuclei == 'true' && inputs.sarif-upload == 'true' && hashFiles('dast/nuclei/nuclei.sarif') != ''
-      uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
       continue-on-error: true
       with:
         sarif_file: dast/nuclei/nuclei.sarif
         category: aedis-dast/nuclei
     - name: Nuclei DAST SARIF to code scanning
       if: inputs.nuclei == 'true' && inputs.sarif-upload == 'true' && hashFiles('dast/nuclei/nuclei-dast.sarif') != ''
-      uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
       continue-on-error: true
       with:
         sarif_file: dast/nuclei/nuclei-dast.sarif
